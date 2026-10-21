@@ -232,3 +232,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.env
+
+# Dataset and generated files
+data/*
+!data/README.md
+models/
+results/
