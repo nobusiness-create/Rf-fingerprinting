@@ -1,119 +1,74 @@
 
-clc;
-clear;
-close all;
-
-%% 1. Load extracted features
+clc; clear; close all;
 [file, folder] = uigetfile('*.csv', 'Select rf_features.csv');
+if isequal(file,0), return; end
 
-if isequal(file, 0)
-    disp('No file selected.');
-    return;
-end
+T = readtable(fullfile(folder,file));
 
-T = readtable(fullfile(folder, file));
+magNames = {'MeanMagnitude','StdMagnitude', ...
+    'SkewMagnitude','KurtMagnitude','CrestFactor'};
+metaNames = {'CFO','SNR'};
+allNames = [magNames, metaNames];
 
-% Start with magnitude-based features only.
-% Exclude CFO and SNR for this first baseline.
-featureNames = {'MeanMagnitude', 'StdMagnitude', ...
-    'SkewMagnitude', 'KurtMagnitude', 'CrestFactor', ...
-    'CFO', 'SNR'};
+Y = string(T.BSSID);
+valid = Y ~= "" & all(isfinite(T{:,allNames}),2);
+T = T(valid,:);
+Y = string(T.BSSID);
+classes = unique(Y);
 
-X = T{:, featureNames};
-labels = string(T.BSSID);
-
-% Remove invalid rows
-valid = all(isfinite(X), 2) & labels ~= "";
-X = X(valid, :);
-labels = labels(valid);
-
-classes = unique(labels);
-fprintf('Recordings: %d\n', size(X,1));
-fprintf('Candidate classes: %d\n', numel(classes));
-
-%% 2. Split recordings into training and test sets
-% Random split within each class
+% One reproducible split shared by all feature sets
 rng(42);
-
-trainIdx = false(size(labels));
-testIdx = false(size(labels));
+train = false(height(T),1);
+test = false(height(T),1);
 
 for c = 1:numel(classes)
-    idx = find(labels == classes(c));
+    idx = find(Y == classes(c));
     idx = idx(randperm(numel(idx)));
-
-    nTrain = floor(0.7 * numel(idx));
-
-    trainIdx(idx(1:nTrain)) = true;
-    testIdx(idx(nTrain+1:end)) = true;
+    ntr = floor(0.7*numel(idx));
+    train(idx(1:ntr)) = true;
+    test(idx(ntr+1:end)) = true;
 end
 
-XTrain = X(trainIdx, :);
-yTrain = labels(trainIdx);
-XTest = X(testIdx, :);
-yTest = labels(testIdx);
+featureSets = {magNames, metaNames, allNames};
+setNames = ["Magnitude only"; "CFO + SNR only"; "All features"];
+accuracies = zeros(3,1);
 
-%% 3. Standardize using training data only
-mu = mean(XTrain, 1);
-sigma = std(XTrain, 0, 1);
-sigma(sigma == 0) = 1;
+for s = 1:3
+    X = T{:,featureSets{s}};
+    A = X(train,:);
+    B = X(test,:);
 
-XTrain = (XTrain - mu) ./ sigma;
-XTest = (XTest - mu) ./ sigma;
+    mu = mean(A,1);
+    sd = std(A,0,1);
+    sd(sd == 0) = 1;
+    A = (A-mu)./sd;
+    B = (B-mu)./sd;
 
-%% 4. Build one centroid per candidate class
-centroids = zeros(numel(classes), size(XTrain, 2));
+    centers = zeros(numel(classes),size(A,2));
+    for c = 1:numel(classes)
+        centers(c,:) = mean(A(Y(train)==classes(c),:),1);
+    end
 
-for c = 1:numel(classes)
-    centroids(c, :) = mean(XTrain(yTrain == classes(c), :), 1);
+    pred = strings(sum(test),1);
+    actual = Y(test);
+    for i = 1:size(B,1)
+        dist = sum((centers-B(i,:)).^2,2);
+        [~,j] = min(dist);
+        pred(i) = classes(j);
+    end
+
+    accuracies(s) = mean(pred == actual)*100;
+    fprintf('%s: %.2f%%\n',setNames(s),accuracies(s));
 end
 
-%% 5. Predict the class of each test recording
-predicted = strings(size(yTest));
+results = table(setNames,accuracies, ...
+    'VariableNames',{'FeatureSet','AccuracyPercent'});
+disp(results);
 
-for i = 1:size(XTest, 1)
-    distances = sum((centroids - XTest(i, :)).^2, 2);
-    [~, bestClass] = min(distances);
-    predicted(i) = classes(bestClass);
-end
-
-accuracy = mean(predicted == yTest) * 100;
-
-fprintf('\nTest recordings: %d\n', numel(yTest));
-fprintf('Baseline accuracy: %.2f%%\n', accuracy);
-
-%% 6. Display per-class results
-fprintf('\nPer-class test results:\n');
-
-for c = 1:numel(classes)
-    idx = yTest == classes(c);
-    classAccuracy = mean(predicted(idx) == yTest(idx)) * 100;
-
-    fprintf('%s: %.2f%% (%d recordings)\n', ...
-        classes(c), classAccuracy, sum(idx));
-end
-
-%% 7. Plot confusion matrix without additional toolboxes
-confusion = zeros(numel(classes));
-
-for i = 1:numel(yTest)
-    actualClass = find(classes == yTest(i), 1);
-    predictedClass = find(classes == predicted(i), 1);
-    confusion(actualClass, predictedClass) = ...
-        confusion(actualClass, predictedClass) + 1;
-end
-
-figure('Name', 'Baseline Confusion Matrix');
-imagesc(confusion);
-axis square;
-colorbar;
-xticks(1:numel(classes));
-yticks(1:numel(classes));
-xticklabels(cellstr(classes));
-yticklabels(cellstr(classes));
-xtickangle(45);
-xlabel('Predicted BSSID');
-ylabel('Actual BSSID');
-title(sprintf('Nearest-Centroid Baseline: %.2f%% Accuracy', accuracy));
-
-disp('Baseline evaluation completed.');
+figure;
+bar(accuracies);
+xticks(1:3);
+xticklabels(cellstr(setNames));
+ylabel('Test accuracy (%)');
+title('Feature Set Comparison');
+grid on;
